@@ -1,0 +1,264 @@
+---
+title: "727 HW3"
+author: "Jay Kim"
+format: pdf
+editor: visual
+---
+
+```{r}
+#| include: false
+library(xml2)
+library(rvest)
+library(tidyverse)
+library(tidytext)
+```
+
+## Web Scraping
+
+```{r}
+url <- "https://en.wikipedia.org/wiki/Grand_Boulevard,_Chicago"
+page <- read_html(url)
+
+# Extract the census population table
+census_table <- page %>% 
+  html_element("table.us-census-pop") %>%
+  html_table()
+
+census_table <- census_table[1:10,c(1:2,4)]
+
+str(census_table)
+print(census_table)
+```
+
+## Expanding to More Pages
+
+```{r}
+src <- read_html(url)
+nds <- html_nodes(src, 
+                  xpath = '//*[contains(concat( " ", @class, " " ), concat( " ", "navbox-odd", " " ))]')
+names <- html_text(nds)
+names[[1]]
+
+```
+
+```{r}
+# Extracted text
+names_text <- names[[1]]
+
+# Split by newline and clean up
+neighborhood_names <- strsplit(names_text, "\n")[[1]] %>%
+  trimws() %>%  # Remove leading/trailing whitespace
+  .[. != ""]    # Remove empty strings
+
+# Convert to URL format (replace spaces with underscores)
+url_suffixes <- gsub(" ", "_", neighborhood_names)
+
+print(url_suffixes)
+```
+
+```{r}
+
+# Fix the Washington Park URL
+url_suffixes[url_suffixes == "Washington_Park,_Chicago"] <- "Washington_Park_(community_area),_Chicago"
+
+# Base URL
+base_url <- "https://en.wikipedia.org/wiki/"
+
+# Initialize an empty list to store tables
+all_tables <- list()
+
+# Loop through each neighborhood
+for (i in seq_along(url_suffixes)) {
+  full_url <- paste0(base_url, url_suffixes[i])
+  
+  cat("Scraping:", neighborhood_names[i], "\n")
+  
+  page <- read_html(full_url)
+  
+  # Extract the census population table
+  census_table <- page %>% 
+    html_element("table.us-census-pop") %>%
+    html_table()
+  
+  # Select first 10 rows and columns 1, 2, and 4
+  census_table <- census_table[1:10, c(1:2, 4)]
+  
+  # Rename columns to include neighborhood name
+  if (i == 1) {
+    colnames(census_table) <- c("Year", paste0(neighborhood_names[i], c("_Pop", "_Change")))
+  } else {
+    census_table <- census_table[, 2:3]
+    colnames(census_table) <- paste0(neighborhood_names[i], c("_Pop", "_Change"))
+  }
+  
+  all_tables[[i]] <- census_table
+  
+  Sys.sleep(1)
+}
+
+# Combine all tables side-by-side
+combined_census_table <- do.call(cbind, all_tables)
+
+print(combined_census_table)
+```
+
+## Scraping and Analyzing Text Data
+
+```{r}
+src <- read_html(url)
+nds <- html_nodes(src, 
+                  xpath = '//p')
+textbody <- html_text(nds)
+textbody <- textbody %>% 
+  paste(collapse = ' ') %>%
+  gsub("\\s+", " ", .) %>%  # Replace multiple spaces with single space
+  trimws()
+textbody
+```
+
+```{r}
+
+# Initialize vectors to store data
+locations <- c()
+descriptions <- c()
+
+
+# Loop through each neighborhood
+for (i in seq_along(url_suffixes)) {
+  full_url <- paste0(base_url, url_suffixes[i])
+  
+  cat("Scraping:", neighborhood_names[i], "\n")
+  
+  tryCatch({
+    page <- read_html(full_url)
+    
+    # Extract all paragraph text
+    textbody <- page %>%
+      html_nodes(xpath = '//p') %>%
+      html_text() %>%
+      paste(collapse = ' ') %>%
+      gsub("\\s+", " ", .) %>%
+      trimws()
+    
+    # Store the data
+    locations <- c(locations, neighborhood_names[i])
+    descriptions <- c(descriptions, textbody)
+    
+  }, error = function(e) {
+    cat("Error scraping", neighborhood_names[i], ":", e$message, "\n")
+  })
+  
+  Sys.sleep(1)
+}
+
+# Create tibble
+community_areas <- tibble(
+  location = locations,
+  description = descriptions
+)
+
+# 1. CREATE TOKENS - one token per row
+community_areas_tokens <- community_areas %>%
+  unnest_tokens(word, description)
+
+print("Tokens created - first few rows:")
+print(head(community_areas_tokens, 20))
+
+# 2. REMOVE STOP WORDS
+data("stop_words") # Call in stopword dataset
+community_areas_clean <- community_areas_tokens %>%
+  anti_join(stop_words, by = "word") %>%
+  filter(!str_detect(word, "^\\d+$"))  # Remove numbers
+
+# 3. MOST COMMON WORDS OVERALL
+top_words_overall <- community_areas_clean %>%
+  count(word, sort = TRUE) %>%
+  top_n(20, n)
+
+# Plot most common words overall
+ggplot(top_words_overall, aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Most Common Words Across All Community Areas",
+       x = "Word",
+       y = "Frequency") +
+  theme_minimal()
+
+# 4. MOST COMMON WORDS WITHIN EACH LOCATION
+top_words_by_location <- community_areas_clean %>%
+  group_by(location) %>%
+  count(word, sort = TRUE) %>%
+  top_n(10, n) %>%
+  ungroup()
+
+# Plot most common words by location
+ggplot(top_words_by_location, aes(x = reorder(word, n), y = n, fill = location)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~location, scales = "free") +
+  labs(title = "Top 10 Words in Each Community Area",
+       x = "Word",
+       y = "Frequency") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+
+# 5. SIMILARITIES ANALYSIS
+# Find words that appear in multiple locations
+word_locations <- community_areas_clean %>%
+  distinct(location, word) %>%
+  count(word) %>%
+  arrange(desc(n))
+
+common_words <- word_locations %>%
+  filter(n >= 5)  # Words appearing in 5+ locations
+
+print("Words appearing in most locations (similarities):")
+print(common_words)
+
+# 6. DIFFERENCES ANALYSIS - Unique words per location
+unique_words <- community_areas_clean %>%
+  group_by(location) %>%
+  count(word) %>%
+  arrange(desc(n)) %>%
+  slice(1:5) %>%
+  ungroup()
+
+print("Top unique/distinctive words per location:")
+print(unique_words)
+
+# TF-IDF Analysis for differences
+community_areas_tfidf <- community_areas_clean %>%
+  count(location, word) %>%
+  bind_tf_idf(word, location, n) %>%
+  arrange(desc(tf_idf))
+
+
+# Plot TF-IDF
+top_tfidf <- community_areas_tfidf %>%
+  group_by(location) %>%
+  top_n(5, tf_idf) %>%
+  ungroup()
+
+ggplot(top_tfidf, aes(x = reorder(word, tf_idf), y = tf_idf, fill = location)) +
+  geom_col(show.legend = FALSE) +
+  coord_flip() +
+  facet_wrap(~location, scales = "free") +
+  labs(title = "Most Distinctive Words (TF-IDF) by Community Area",
+       x = "Word",
+       y = "TF-IDF Score") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+
+# 7. SUMMARY OF SIMILARITIES AND DIFFERENCES
+cat("\n=== SIMILARITIES ===\n")
+cat("Common themes across locations:\n")
+print(common_words %>% head(10))
+
+cat("\n=== DIFFERENCES ===\n")
+cat("Distinctive characteristics (high TF-IDF):\n")
+community_areas_tfidf %>%
+  group_by(location) %>%
+  top_n(3, tf_idf) %>%
+  select(location, word, tf_idf) %>%
+  print(n = 30)
+```
