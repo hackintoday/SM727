@@ -1,0 +1,124 @@
+---
+title: "SM 727 HW4"
+author: "Jay Kim"
+format: pdf
+editor: visual
+---
+
+[Github](https://github.com/hackintoday/SM727/tree/main/HW4)
+
+```{r}
+#| include: false
+library(tidyverse)
+library(DBI)
+library(bigrquery)
+```
+
+```{r}
+project <- "surv-727-test-476319"
+```
+
+```{r}
+con <- dbConnect(
+bigrquery::bigquery(),
+project = "bigquery-public-data",
+dataset = "chicago_crime",
+billing = project
+)
+
+```
+
+```{r}
+#| warning: false
+dbListTables(con)
+```
+
+```{sql connection=con}
+SELECT count(primary_type) AS primary_count, count(*) AS overall_count
+FROM crime
+WHERE year = 2015
+LIMIT 10;
+```
+
+```{sql connection=con}
+SELECT count(*) AS arrest_count, primary_type AS type
+FROM `bigquery-public-data.chicago_crime.crime`
+WHERE year = 2016 and arrest = true
+GROUP BY primary_type
+ORDER BY arrest_count DESC
+LIMIT 10;
+
+```
+
+## Time of day associated with most arrests
+
+Hours 18-20 are associated with the most arrests.
+
+```{sql connection=con}
+SELECT 
+  EXTRACT(HOUR from date) AS hourofday,
+  COUNT(*) AS arrest_count
+FROM `bigquery-public-data.chicago_crime.crime`
+WHERE year = 2016 
+  AND arrest = true
+GROUP BY EXTRACT(HOUR from date)
+ORDER BY arrest_count DESC
+LIMIT 10;
+```
+
+```{sql connection=con}
+SELECT COUNT(*) AS arrest_count, year
+FROM `bigquery-public-data.chicago_crime.crime`
+WHERE arrest = true
+  AND primary_type = 'HOMICIDE'
+GROUP BY year
+ORDER BY arrest_count DESC
+LIMIT 10;
+```
+
+## Highest Arrests District 2015/2016
+
+District 11 has the highest numbers of arrest in 2015 and 2016.
+
+```{sql connection=con}
+SELECT COUNT(*) AS arrest_count, year, district
+FROM `bigquery-public-data.chicago_crime.crime`
+WHERE arrest = true
+  AND (year = 2015 OR year = 2016)
+GROUP BY district, year
+ORDER BY arrest_count DESC
+LIMIT 10;
+```
+
+```{r}
+query <- "
+SELECT COUNT(*) AS arrest_count
+FROM `bigquery-public-data.chicago_crime.crime`
+WHERE arrest = true
+  AND year = 2016
+  AND district = 11
+GROUP BY primary_type
+ORDER BY arrest_count DESC
+"
+
+result <- DBI::dbGetQuery(con, query)
+print(result)
+```
+
+```{r}
+crime <- tbl(con, "crime")
+```
+
+```{r}
+arrests_by_district <- crime %>%
+  filter(arrest == TRUE, year == 2016, district == 11) %>%
+  group_by(primary_type, year) %>%
+  summarise(arrest_count = n(), .groups = "drop") %>%
+  arrange(year)
+
+head(arrests_by_district, 10)
+```
+
+```{r}
+dbDisconnect(con)
+```
